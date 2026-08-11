@@ -7,6 +7,17 @@ spring:
         access-key: test
         secret-key: test
 
+management:
+  health:
+    db:
+      # So no perfil de teste: nao ha Postgres para o SpringBootTest simples
+      # de /actuator/health (HealthEndpointTest). Os testes que de fato
+      # precisam de banco sobem Postgres em container (Task 3 em diante) e
+      # nao dependem deste indicador estar ligado. Em producao o indicador
+      # de banco continua ativo por padrao: se o Postgres cair, o worker nao
+      # esta saudavel, e e isso que /actuator/health deve dizer.
+      enabled: false
+
 nexuspay:
   sqs:
     queue-url: http://localhost:0/fila-que-nao-existe

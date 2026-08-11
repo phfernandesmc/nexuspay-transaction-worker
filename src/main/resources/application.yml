@@ -18,14 +18,6 @@ management:
   endpoint:
     health:
       show-details: never
-  health:
-    db:
-      # Task 1 sobe sem Postgres disponivel (nenhum docker-compose ainda
-      # existe no repo e esta task nao depende de Docker). Sem isto, o
-      # contribuidor de saude do datasource tenta conectar e /actuator/health
-      # responde 503 mesmo com a aplicacao no ar. Reavaliar quando a infra de
-      # banco (Testcontainers/docker-compose) entrar nas proximas tasks.
-      enabled: false
 
 nexuspay:
   aws:
