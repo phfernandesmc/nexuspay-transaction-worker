@@ -1,0 +1,34 @@
+spring:
+  application:
+    name: nexuspay-transaction-worker
+  datasource:
+    url: jdbc:postgresql://localhost:5433/nexuspay
+    username: nexuspay
+    password: nexuspay
+  cloud:
+    aws:
+      region:
+        static: us-east-1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+  health:
+    db:
+      # Task 1 sobe sem Postgres disponivel (nenhum docker-compose ainda
+      # existe no repo e esta task nao depende de Docker). Sem isto, o
+      # contribuidor de saude do datasource tenta conectar e /actuator/health
+      # responde 503 mesmo com a aplicacao no ar. Reavaliar quando a infra de
+      # banco (Testcontainers/docker-compose) entrar nas proximas tasks.
+      enabled: false
+
+nexuspay:
+  aws:
+    profile: nexuspay-worker
+  sqs:
+    queue-url: https://sqs.us-east-1.amazonaws.com/797771596673/api-processar-transferencia-worker.fifo

@@ -1,0 +1,13 @@
+spring:
+  cloud:
+    aws:
+      region:
+        static: us-east-1
+      credentials:
+        access-key: test
+        secret-key: test
+
+nexuspay:
+  sqs:
+    queue-url: http://localhost:0/fila-que-nao-existe
+    listener-enabled: false
