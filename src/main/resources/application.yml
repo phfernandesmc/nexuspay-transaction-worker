@@ -1,14 +1,22 @@
+# Todos os valores abaixo tem um padrao (o formato ${VAR:padrao}) para que o
+# worker suba localmente sem nenhuma variavel de ambiente configurada. Em
+# producao (Fatia 4), as variaveis de ambiente sobrescrevem os padroes — o
+# arquivo fica versionado no GitHub e nao pode carregar credencial nem
+# identificador de conta real em texto claro.
 spring:
   application:
     name: nexuspay-transaction-worker
   datasource:
-    url: jdbc:postgresql://localhost:5433/nexuspay
-    username: nexuspay
-    password: nexuspay
+    # A porta e 5433, nao 5432: maquinas Windows com servico nativo
+    # postgresql-x64-* costumam ocupar a 5432, e o docker-compose.yml do
+    # gateway ja mapeia 5433.
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5433/nexuspay}
+    username: ${DATABASE_USER:nexuspay}
+    password: ${DATABASE_PASSWORD:nexuspay}
   cloud:
     aws:
       region:
-        static: us-east-1
+        static: ${AWS_REGION:us-east-1}
 
 management:
   endpoints:
@@ -21,6 +29,6 @@ management:
 
 nexuspay:
   aws:
-    profile: nexuspay-worker
+    profile: ${AWS_PROFILE:nexuspay-worker}
   sqs:
-    queue-url: https://sqs.us-east-1.amazonaws.com/797771596673/api-processar-transferencia-worker.fifo
+    queue-url: ${SQS_QUEUE_URL:https://sqs.us-east-1.amazonaws.com/797771596673/api-processar-transferencia-worker.fifo}
