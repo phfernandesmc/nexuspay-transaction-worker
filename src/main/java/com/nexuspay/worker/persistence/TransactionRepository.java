@@ -36,9 +36,25 @@ public class TransactionRepository {
      * O que este FOR UPDATE de fato faz e mais barato que isso: serializa
      * os dois consumidores ANTES de qualquer UPDATE em accounts ou INSERT
      * em ledger_entries, entao o segundo bloqueia aqui, le o status ja
-     * resolvido e sai sem gastar UPDATE/INSERT/rollback nenhum. E defesa em
-     * profundidade e caminho rapido, nao a garantia — a garantia e a
-     * constraint unica mais o rollback do savepoint.
+     * resolvido e sai sem gastar UPDATE/INSERT/rollback nenhum. NO CAMINHO
+     * COMPLETED e defesa em profundidade e caminho rapido, nao a garantia — a
+     * garantia ali e a constraint unica mais o rollback do savepoint.
+     *
+     * QUALIFICACAO (review final da fatia). O paragrafo acima vale SO no
+     * caminho COMPLETED, e a medicao da Task 8 nunca reprocessou uma transacao
+     * que terminou FAILED. Numa transacao FAILED nao existe NENHUMA linha em
+     * ledger_entries: a constraint unica nao tem em que colidir e o savepoint
+     * nao tem o que desfazer. Ali a garantia contra aplicacao dupla e
+     * INTEIRAMENTE este FOR UPDATE mais o guarda de status em
+     * TransactionProcessor.process — nao ha rede embaixo.
+     *
+     * Cenario real: o worker grava FAILED e morre antes do DeleteMessage; a
+     * conta de origem recebe um deposito; a reentrega debita e grava COMPLETED
+     * por cima do FAILED. Coberto por
+     * TransactionProcessorTest.transacao_failed_reentregue_nao_e_reaplicada.
+     *
+     * Portanto: NAO remova esta trava lendo "otimizacao, nao corretude". Ela e
+     * otimizacao no caminho COMPLETED e e a corretude no caminho FAILED.
      */
     public Optional<TransactionRecord> findForUpdate(UUID id) {
         return jdbc.sql("""

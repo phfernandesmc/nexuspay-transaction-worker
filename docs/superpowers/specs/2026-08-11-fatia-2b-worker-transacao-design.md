@@ -81,7 +81,7 @@ A migration é escrita **no repositório do gateway**. O Alembic segue dono úni
 | `balance_after` | NUMERIC(15,2) | `CHECK (balance_after >= 0)` |
 | `created_at` | TIMESTAMPTZ | `NOT NULL DEFAULT now()` |
 
-- `UNIQUE (transaction_id, account_id)` — uma transação toca cada conta no máximo uma vez. Combinada com o `ROLLBACK TO SAVEPOINT` do passo 5 (§6), é o que de fato impede a aplicação dupla — medido na Task 8, ver §6.
+- `UNIQUE (transaction_id, account_id)` — uma transação toca cada conta no máximo uma vez. Combinada com o `ROLLBACK TO SAVEPOINT` do passo 5 (§6), é o que de fato impede a aplicação dupla **nas transações que terminam `COMPLETED`** — medido na Task 8, ver §6. Numa transação `FAILED` não há linha nenhuma aqui para colidir, e a garantia passa a ser o `FOR UPDATE` mais o guarda de status; a qualificação inteira está em §6.
 - `INDEX (account_id, created_at DESC, id DESC)` — para consulta de histórico por conta.
 
 Uma transferência gera dois lançamentos; um depósito gera um. Não há partida dobrada com conta de contrapartida: o depósito traz dinheiro de fora do sistema, e inventar uma conta de clearing só para equilibrar linhas acrescentaria um conceito que ninguém consulta.
@@ -103,7 +103,15 @@ Tudo dentro de uma única transação de banco.
 
 **Medido, não presumido (Task 8, round de correção 1).** A afirmação original desta seção era a de que o passo 1 fecha a redelivery: o segundo consumidor bloquearia no `FOR UPDATE` até o primeiro commitar, leria `COMPLETED` e desistiria no passo 2. Isso é falso. Removendo o `FOR UPDATE` de `TransactionRepository.findForUpdate` e rodando `TransactionProcessorConcurrencyTest` 5 vezes e `TransactionProcessorTest` 2 vezes, todas as execuções passaram (5/5 e 2/2) sem nenhuma duplicação de saldo ou de lançamento. Sem a trava, os dois consumidores leem `PENDING` e os dois tentam aplicar o movimento; o segundo bate na `UNIQUE (transaction_id, account_id)` de `ledger_entries` ao inserir o lançamento duplicado, o `ROLLBACK TO SAVEPOINT` do passo 5 desfaz o movimento parcial dele, e `process()` retorna sem sobrescrever o status já gravado pelo vencedor. Quem garante a aplicação única é essa combinação — a constraint única mais o rollback do savepoint —, não o passo 1.
 
-O `FOR UPDATE` do passo 1 continua no código como defesa em profundidade e caminho rápido: ele serializa os dois consumidores **antes** de qualquer `UPDATE` em `accounts` ou `INSERT` em `ledger_entries`, então o segundo bloqueia ali, lê o status já resolvido e sai sem gastar o `UPDATE`/`INSERT`/rollback que a ausência da trava obrigaria. É uma otimização, não o mecanismo de corretude.
+O `FOR UPDATE` do passo 1 continua no código como defesa em profundidade e caminho rápido: ele serializa os dois consumidores **antes** de qualquer `UPDATE` em `accounts` ou `INSERT` em `ledger_entries`, então o segundo bloqueia ali, lê o status já resolvido e sai sem gastar o `UPDATE`/`INSERT`/rollback que a ausência da trava obrigaria. No caminho `COMPLETED`, é uma otimização, não o mecanismo de corretude.
+
+**Qualificação obrigatória (review final da fatia): os dois parágrafos acima valem SÓ no caminho `COMPLETED`.** A medição da Task 8 nunca reprocessou uma transação que terminou `FAILED` — as cinco corridas usam transações diferentes ou terminam `COMPLETED`. E numa transação `FAILED` **não existe nenhuma linha em `ledger_entries`**: a constraint única não tem em que colidir e o `ROLLBACK TO SAVEPOINT` não tem o que desfazer. Ali a garantia contra a aplicação dupla é **inteiramente o `FOR UPDATE` do passo 1 mais o guarda de status do passo 2** — não sobra rede nenhuma embaixo deles.
+
+O cenário não é hipotético: o worker grava `FAILED` e morre antes do `DeleteMessage`; enquanto a mensagem espera o visibility timeout, a conta de origem recebe um depósito; a reentrega encontra saldo que antes não havia, debita de verdade e grava `COMPLETED` por cima de um `FAILED` que o cliente já viu. `TransactionProcessorTest.transacao_failed_reentregue_nao_e_reaplicada` cobre exatamente isso, e foi provado por mutação (apagando o guarda do passo 2) que ele mata o defeito — o teste irmão do caminho `COMPLETED` não mata, porque a colisão na constraint única produz as mesmas asserções.
+
+Quem ler "otimização, não corretude" e concluir que a trava pode sair está lendo metade da frase. Ela é otimização no caminho `COMPLETED` e é a corretude no caminho `FAILED`.
+
+Como cinto e suspensório, o `UPDATE` do passo 6 leva `AND status = 'PENDING'`: se o guarda do passo 2 for removido um dia, o pior caso passa a ser um movimento de saldo indevido com o **status terminal preservado**, em vez de um `COMPLETED` gravado por cima de um `FAILED`.
 
 ## 7. Movimento de saldo
 
