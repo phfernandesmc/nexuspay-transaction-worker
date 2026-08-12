@@ -2,14 +2,24 @@ package com.nexuspay.worker.messaging;
 
 import com.nexuspay.worker.Fixtures;
 import com.nexuspay.worker.PostgresTestBase;
+import com.nexuspay.worker.persistence.AccountRepository;
+import com.nexuspay.worker.persistence.LedgerRepository;
+import com.nexuspay.worker.persistence.TransactionRepository;
+import com.nexuspay.worker.service.TransactionProcessor;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.localstack.LocalStackContainer;
@@ -30,6 +40,53 @@ import static org.awaitility.Awaitility.await;
  * automatizado fala com ela — este roda inteiro contra LocalStack.
  */
 class TransactionListenerTest extends PostgresTestBase {
+
+    /**
+     * Decora o TransactionProcessor para levantar na PRIMEIRA entrega de uma
+     * transacao especifica.
+     *
+     * Armado por UUID, e nao "na primeira invocacao" global, de proposito: o
+     * contexto e compartilhado pelos cinco testes desta classe, e um decorador
+     * que falhasse na primeira chamada que aparecesse tornaria o resultado
+     * dependente da ordem de execucao. Sem armar, ele e inerte.
+     *
+     * Classe nomeada, nao anonima: classes anonimas sao implicitamente finais e
+     * o CGLIB nao consegue proxiar — e o proxy e necessario, porque o
+     * @Transactional de TransactionProcessor.process e herdado por este
+     * override.
+     */
+    static class ProcessadorQueFalhaUmaVez extends TransactionProcessor {
+
+        static final Set<UUID> ARMADAS = ConcurrentHashMap.newKeySet();
+
+        ProcessadorQueFalhaUmaVez(TransactionRepository transacoes, AccountRepository contas,
+                                  LedgerRepository ledger, TransactionTemplate nested) {
+            super(transacoes, contas, ledger, nested);
+        }
+
+        @Override
+        public void process(UUID transactionId) {
+            if (ARMADAS.remove(transactionId)) {
+                throw new IllegalStateException(
+                        "falha simulada de infraestrutura (banco fora do ar)");
+            }
+            super.process(transactionId);
+        }
+    }
+
+    @TestConfiguration
+    static class ConfiguracaoDoProcessadorDecorado {
+
+        @Bean
+        @Primary
+        TransactionProcessor processadorDecorado(TransactionRepository transacoes,
+                                                 AccountRepository contas,
+                                                 LedgerRepository ledger,
+                                                 TransactionTemplate nestedTransactionTemplate) {
+            return new ProcessadorQueFalhaUmaVez(
+                    transacoes, contas, ledger, nestedTransactionTemplate);
+        }
+    }
 
     // withServices recebe String na Testcontainers 2.x — o enum Service so
     // existe na classe legada org.testcontainers.containers.localstack.
@@ -138,6 +195,38 @@ class TransactionListenerTest extends PostgresTestBase {
 
         await().atMost(Duration.ofSeconds(30))
                 .untilAsserted(() -> assertThat(status(tx)).isEqualTo("FAILED"));
+    }
+
+    @Test
+    void excecao_no_processador_nao_deleta_a_mensagem() {
+        // O criterio 9 do spec ("excecao nao deleta a mensagem") so tinha, como
+        // prova, o caminho da mensagem envenenada — que quebra na conversao do
+        // Jackson, ANTES do listener. Nada exercitava uma excecao SAINDO de
+        // process(). A diferenca importa: um try/catch acrescentado em aoReceber
+        // no futuro ("vamos so logar o erro") e o refactor mais natural do
+        // mundo, e faria toda mensagem processada com o banco fora do ar ser
+        // deletada com o dinheiro parado — sem mover nenhuma assercao.
+        var origem = Fixtures.criarConta(jdbc, "500.00");
+        var destino = Fixtures.criarConta(jdbc, "0.00");
+        var tx = Fixtures.criarTransferencia(jdbc, origem, destino, "100.00");
+
+        // A primeira entrega desta transacao levanta; a segunda passa direto.
+        ProcessadorQueFalhaUmaVez.ARMADAS.add(tx);
+
+        publicar(tx);
+
+        // Se a excecao deletasse a mensagem, nao haveria segunda entrega e a
+        // transacao ficaria PENDING para sempre: este await estouraria.
+        await().atMost(Duration.ofSeconds(30))
+                .untilAsserted(() -> assertThat(status(tx)).isEqualTo("COMPLETED"));
+
+        assertThat(ProcessadorQueFalhaUmaVez.ARMADAS)
+                .as("a primeira entrega precisa ter passado pelo caminho que levanta")
+                .doesNotContain(tx);
+        assertThat(jdbc.sql("SELECT balance FROM accounts WHERE id = :id")
+                .param("id", destino).query(BigDecimal.class).single())
+                .as("a reentrega aplicou o movimento uma vez so")
+                .isEqualByComparingTo(new BigDecimal("100.00"));
     }
 
     @Test
