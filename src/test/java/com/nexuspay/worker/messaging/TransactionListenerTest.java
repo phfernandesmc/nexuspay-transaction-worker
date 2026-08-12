@@ -141,19 +141,46 @@ class TransactionListenerTest extends PostgresTestBase {
     }
 
     @Test
-    void mensagem_ilegivel_e_redirigida_para_a_dlq_apos_esgotar_as_tentativas() {
+    void mensagem_ilegivel_vai_para_a_dlq_e_libera_o_grupo_para_a_proxima_mensagem() {
+        // Round de correcao 1 (review): o criterio 10 do spec tem duas
+        // metades — a mensagem envenenada chega na DLQ E o MessageGroupId
+        // volta a fluir. A versao anterior deste teste so provava a
+        // primeira: usava um grupo aleatorio e descartavel, entao nunca
+        // exercitava o motivo pela qual a DLQ existe numa fila FIFO — destravar
+        // o grupo. Numa fila FIFO, uma mensagem presa nao bloqueia so a si
+        // mesma: bloqueia TODAS as mensagens do mesmo MessageGroupId (aqui, a
+        // conta de origem) ate ela sair da fila principal. Este teste publica
+        // as duas mensagens no MESMO grupo, fixo e conhecido, e so declara
+        // vitoria quando a segunda (valida) for processada — o que so pode
+        // acontecer depois que a primeira (envenenada) deixar a fila
+        // principal, seja por delecao normal, seja por ir para a DLQ.
+        var grupo = UUID.randomUUID().toString();
+
+        var origem = Fixtures.criarConta(jdbc, "500.00");
+        var destino = Fixtures.criarConta(jdbc, "0.00");
+        var txValida = Fixtures.criarTransferencia(jdbc, origem, destino, "100.00");
+
         // Corpo com transaction_id que nao e um UUID valido: falha na
         // conversao da mensagem, ANTES de chegar no TransactionProcessor.
         // E uma falha de infraestrutura genuina (mensagem envenenada), nao de
         // negocio — e por isso o listener nunca a confirma, a redrive policy
         // (maxReceiveCount=2, visibility timeout=1s) reentrega ate esgotar, e
-        // a SQS move sozinha para a DLQ. Fecha a lacuna declarada no plano:
-        // nenhum outro teste force esse caminho ate a DLQ.
+        // a SQS move sozinha para a DLQ.
         sqs.sendMessage(SendMessageRequest.builder()
                 .queueUrl(filaUrl)
                 .messageBody("{\"transaction_id\":\"nao-e-um-uuid\"}")
-                .messageGroupId(UUID.randomUUID().toString())
+                .messageGroupId(grupo)
                 .messageDeduplicationId(UUID.randomUUID().toString())
+                .build());
+
+        // Publicada no MESMO grupo, logo em seguida: enquanto a envenenada
+        // estiver presa na fila principal (em voo ou aguardando o proximo
+        // recebimento), a FIFO nao entrega esta aqui para nenhum consumidor.
+        sqs.sendMessage(SendMessageRequest.builder()
+                .queueUrl(filaUrl)
+                .messageBody("{\"transaction_id\":\"" + txValida + "\"}")
+                .messageGroupId(grupo)
+                .messageDeduplicationId(txValida.toString())
                 .build());
 
         await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
@@ -162,11 +189,14 @@ class TransactionListenerTest extends PostgresTestBase {
                     .attributes().get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES);
             assertThat(visiveisNaDlq).isEqualTo("1");
         });
-        await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
-            var visiveisNaPrincipal = sqs.getQueueAttributes(b -> b.queueUrl(filaUrl)
-                            .attributeNames(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES))
-                    .attributes().get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES);
-            assertThat(visiveisNaPrincipal).isEqualTo("0");
-        });
+
+        // A prova de que o grupo destravou: a segunda mensagem so e
+        // processada depois que a primeira sai da fila principal. Se o grupo
+        // continuasse bloqueado, esta asserção estouraria os 30s.
+        await().atMost(Duration.ofSeconds(30))
+                .untilAsserted(() -> assertThat(status(txValida)).isEqualTo("COMPLETED"));
+        assertThat(jdbc.sql("SELECT balance FROM accounts WHERE id = :id")
+                .param("id", destino).query(BigDecimal.class).single())
+                .isEqualByComparingTo(new BigDecimal("100.00"));
     }
 }
