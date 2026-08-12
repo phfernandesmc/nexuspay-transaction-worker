@@ -23,10 +23,22 @@ public class TransactionRepository {
     /**
      * Le a transacao travando a linha ate o fim da transacao de banco.
      *
-     * E esta trava que fecha a reentrega, nao a checagem de status que vem
-     * depois: dois consumidores com a mesma mensagem chegam aqui, o segundo
-     * BLOQUEIA ate o primeiro commitar, e so entao le o status ja resolvido.
-     * Sem o FOR UPDATE, os dois leriam PENDING e os dois aplicariam.
+     * Medido (Task 8, round de correcao 1): quem realmente impede a
+     * aplicacao dupla NAO e este FOR UPDATE — e a UNIQUE(transaction_id,
+     * account_id) de ledger_entries, combinada com o SAVEPOINT em
+     * TransactionProcessor.process. Removendo este FOR UPDATE e rodando
+     * TransactionProcessorConcurrencyTest 5x, as 4 corridas continuaram
+     * verdes nas 5 vezes: o segundo consumidor tambem chega a ler PENDING e
+     * tambem tenta aplicar, mas o INSERT duplicado no ledger dispara
+     * DuplicateKeyException, o savepoint desfaz o movimento parcial, e
+     * process() retorna sem sobrescrever o status — mesmo resultado final.
+     *
+     * O que este FOR UPDATE de fato faz e mais barato que isso: serializa
+     * os dois consumidores ANTES de qualquer UPDATE em accounts ou INSERT
+     * em ledger_entries, entao o segundo bloqueia aqui, le o status ja
+     * resolvido e sai sem gastar UPDATE/INSERT/rollback nenhum. E defesa em
+     * profundidade e caminho rapido, nao a garantia — a garantia e a
+     * constraint unica mais o rollback do savepoint.
      */
     public Optional<TransactionRecord> findForUpdate(UUID id) {
         return jdbc.sql("""

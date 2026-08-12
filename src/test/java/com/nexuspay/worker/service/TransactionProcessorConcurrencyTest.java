@@ -108,4 +108,26 @@ class TransactionProcessorConcurrencyTest extends PostgresTestBase {
         assertThat(saldo(origem)).isGreaterThanOrEqualTo(BigDecimal.ZERO);
         assertThat(saldo(origem)).isEqualByComparingTo(new BigDecimal("50.00"));
     }
+
+    /**
+     * Adicionado no round de correcao 1 (achado de review): tenta isolar a
+     * garantia de reentrega usando um DEPOSIT, que so tem uma perna (CREDIT),
+     * sem a segunda UPDATE de accounts que uma TRANSFER tem. Mesmo assim nao
+     * isola por completo o FOR UPDATE de findForUpdate: o proprio UPDATE de
+     * accounts.credit trava a linha da conta de destino, entao a segunda
+     * thread ainda serializaria ali. Medido sem o FOR UPDATE (5 execucoes):
+     * as 5 passaram, credito aplicado uma vez so em todas — ver
+     * task-8-report.md, secao "Round de correcao 1".
+     */
+    @Test
+    void deposito_processado_em_paralelo_credita_o_destino_uma_vez_so() throws Exception {
+        var destino = Fixtures.criarConta(jdbc, "0.00");
+        var deposito = Fixtures.criarDeposito(jdbc, destino, "100.00");
+
+        emParalelo(() -> processor.process(deposito), () -> processor.process(deposito));
+
+        assertThat(saldo(destino)).isEqualByComparingTo(new BigDecimal("100.00"));
+        assertThat(jdbc.sql("SELECT count(*) FROM ledger_entries WHERE transaction_id = :id")
+                .param("id", deposito).query(Integer.class).single()).isEqualTo(1);
+    }
 }
