@@ -4,16 +4,17 @@
 # arquivo fica versionado no GitHub e nao pode carregar credencial nem
 # identificador de conta real em texto claro.
 #
-# EXCECAO deliberada: nexuspay.sqs.queue-url NAO tem padrao. Ter, como tinha,
-# significava que qualquer contexto Spring subido sem o perfil de teste — um
-# @SpringBootTest novo que esquecesse @ActiveProfiles("test"), por exemplo —
-# apontava um consumidor VIVO para a fila real de producao e a suite ficava
-# verde comendo mensagem de verdade. O que impedia isso era so
-# application-test.yml, carregado por uma anotacao que alguem precisa lembrar de
-# escrever: convencao, nao mecanismo. Sem padrao, esse contexto falha no boot
-# com "Could not resolve placeholder SQS_QUEUE_URL", que e o comportamento
-# certo — o worker so consome a fila quando alguem disse explicitamente qual e
-# ela. A Fatia 4 injeta a variavel no deploy.
+# DUAS EXCECOES deliberadas: nexuspay.sqs.queue-url e nexuspay.aws.profile NAO
+# tem padrao. Ter, como tinham, significava que qualquer contexto Spring subido
+# sem o perfil de teste — um @SpringBootTest novo que esquecesse
+# @ActiveProfiles("test"), por exemplo — apontava um consumidor VIVO para a fila
+# real de producao, assinado com a credencial real, e a suite ficava verde
+# comendo mensagem de verdade. O que impedia isso era so application-test.yml,
+# carregado por uma anotacao que alguem precisa lembrar de escrever: convencao,
+# nao mecanismo. Sem padrao, esse contexto falha no boot com "Could not resolve
+# placeholder", que e o comportamento certo — o worker so consome a fila e so
+# assina requisicao quando alguem disse explicitamente com o que. A Fatia 4
+# injeta as duas variaveis no deploy.
 spring:
   application:
     name: nexuspay-transaction-worker
@@ -40,6 +41,6 @@ management:
 
 nexuspay:
   aws:
-    profile: ${AWS_PROFILE:nexuspay-worker}
+    profile: ${AWS_PROFILE}
   sqs:
     queue-url: ${SQS_QUEUE_URL}

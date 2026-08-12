@@ -3,6 +3,17 @@ spring:
     aws:
       region:
         static: us-east-1
+      # Estas credenciais ficaram MORTAS da Task 1 ate a review final: AwsConfig
+      # registrava um AwsCredentialsProvider em todo contexto de teste e
+      # CredentialsProviderAutoConfiguration so vale na ausencia desse bean,
+      # entao a suite inteira assinava com a credencial real de producao. Com o
+      # @Profile("!test") de AwsConfig elas passaram a valer de fato — medido:
+      # o bean resolvido no perfil de teste e StaticCredentialsProvider com
+      # accessKeyId "test". Nao remova: sem este bloco o contexto cai na cadeia
+      # padrao do SDK, que numa maquina com perfil "default" ou com
+      # AWS_ACCESS_KEY_ID no ambiente assina o LocalStack com credencial de
+      # verdade (e nesta maquina, sem "default", os 4 testes de
+      # TransactionListenerTest quebram com "Unable to load credentials").
       credentials:
         access-key: test
         secret-key: test
