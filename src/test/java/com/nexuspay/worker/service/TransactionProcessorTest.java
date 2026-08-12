@@ -3,7 +3,7 @@ package com.nexuspay.worker.service;
 import com.nexuspay.worker.Fixtures;
 import com.nexuspay.worker.PostgresTestBase;
 import java.math.BigDecimal;
-import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -216,18 +216,30 @@ class TransactionProcessorTest extends PostgresTestBase {
 
         processor.process(tx);
 
-        List<BigDecimal> saldos = jdbc.sql("""
-                SELECT balance_after FROM ledger_entries
+        // A coluna direction vem no SELECT de proposito. Sem ela, o par
+        // valor/sentido era inferido pela ordem de DECLARACAO do enum
+        // ledger_direction ('DEBIT', 'CREDIT') — o Postgres ordena enum por
+        // declaracao, nao alfabeticamente. Funcionava, mas fazia o teste
+        // depender de um detalhe do schema para dizer QUAL lado e qual: uma
+        // migration que redeclarasse o enum invertido deixaria o teste verde
+        // com as asserções trocadas de lado. Agora o sentido e lido, nao
+        // deduzido; o ORDER BY so fixa o vaivem das linhas.
+        var lancamentos = jdbc.sql("""
+                SELECT direction, balance_after FROM ledger_entries
                  WHERE transaction_id = :tx ORDER BY direction
-                """).param("tx", tx).query(BigDecimal.class).list();
+                """).param("tx", tx)
+                .query((rs, linha) -> Map.entry(
+                        rs.getString("direction"), rs.getBigDecimal("balance_after")))
+                .list();
 
-        // ORDER BY direction: enum ledger_direction e declarado no schema como
-        // ('DEBIT', 'CREDIT') (schema.sql linha 44-47) — Postgres ordena enum
-        // pela ordem de DECLARACAO, nao alfabetica. DEBIT sai primeiro.
-        // Desvio do brief: o comentario original supunha ordem alfabetica
-        // (CREDIT antes de DEBIT), o que so e verdade em texto puro, nao para
-        // este tipo enumerado; os valores esperados aqui foram trocados.
-        assertThat(saldos.get(0)).isEqualByComparingTo(new BigDecimal("400.00"));
-        assertThat(saldos.get(1)).isEqualByComparingTo(new BigDecimal("200.00"));
+        assertThat(lancamentos).hasSize(2);
+        assertThat(lancamentos.get(0).getKey()).isEqualTo("DEBIT");
+        assertThat(lancamentos.get(0).getValue())
+                .as("saldo da ORIGEM depois do debito")
+                .isEqualByComparingTo(new BigDecimal("400.00"));
+        assertThat(lancamentos.get(1).getKey()).isEqualTo("CREDIT");
+        assertThat(lancamentos.get(1).getValue())
+                .as("saldo do DESTINO depois do credito")
+                .isEqualByComparingTo(new BigDecimal("200.00"));
     }
 }

@@ -49,6 +49,46 @@ class SchemaDriftTest extends PostgresTestBase {
                 "amount", "balance_after", "created_at");
     }
 
+    private List<String> valoresDoEnum(String tipo) {
+        // enum_range devolve os rotulos na ordem de DECLARACAO, que e tambem a
+        // ordem que o Postgres usa em ORDER BY sobre a coluna.
+        return jdbc.sql("SELECT unnest(enum_range(NULL::" + tipo + "))::text")
+                .query(String.class)
+                .list();
+    }
+
+    /**
+     * Presenca de coluna nao basta: o worker faz valueOf() sobre o TEXTO de
+     * transaction_status e transaction_type. Um valor novo acrescentado pelo
+     * gateway (um REVERSED, um SCHEDULED) chega aqui como
+     * IllegalArgumentException dentro do mapeamento da linha — ANTES do guarda
+     * de status, e portanto sem ser falha de negocio. A mensagem nunca e
+     * deletada, reentrega 10 vezes ate a DLQ e trava o MessageGroupId (a conta
+     * de origem) por 18 a 20 minutos, com este teste de divergencia verde o
+     * tempo todo. E o que estes tres testes fecham.
+     *
+     * containsExactly, nao containsExactlyInAnyOrder: a ORDEM tambem e
+     * contrato. ledger_direction ordenado por declaracao e o que faz
+     * "ORDER BY direction" significar DEBIT antes de CREDIT.
+     */
+    @Test
+    void transaction_status_tem_exatamente_os_valores_que_o_worker_conhece() {
+        assertThat(valoresDoEnum("transaction_status"))
+                .containsExactly("PENDING", "COMPLETED", "FAILED");
+    }
+
+    @Test
+    void transaction_type_tem_exatamente_os_valores_que_o_worker_conhece() {
+        assertThat(valoresDoEnum("transaction_type"))
+                .containsExactly("DEPOSIT", "TRANSFER");
+    }
+
+    @Test
+    void ledger_direction_tem_exatamente_os_valores_que_o_worker_grava() {
+        assertThat(valoresDoEnum("ledger_direction"))
+                .containsExactly("DEBIT", "CREDIT");
+    }
+
     @Test
     void a_unica_do_ledger_existe() {
         var constraints = jdbc.sql("""
@@ -67,5 +107,22 @@ class SchemaDriftTest extends PostgresTestBase {
                 """).query(String.class).list();
 
         assertThat(constraints).contains("check_positive_balance");
+    }
+
+    /**
+     * AccountRepository.debit e credit nao validam que amount e positivo, e
+     * nao precisam: o valor vem da coluna transactions.amount, que o banco
+     * garante ser maior que zero. Se este CHECK sumir, um amount negativo
+     * transforma um credito em debito silencioso, sem passar por nenhuma
+     * validacao do worker.
+     */
+    @Test
+    void o_check_de_amount_positivo_das_transacoes_existe() {
+        var constraints = jdbc.sql("""
+                SELECT conname FROM pg_constraint
+                 WHERE conrelid = 'transactions'::regclass AND contype = 'c'
+                """).query(String.class).list();
+
+        assertThat(constraints).contains("check_positive_amount");
     }
 }
