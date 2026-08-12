@@ -163,6 +163,52 @@ class TransactionProcessorTest extends PostgresTestBase {
     }
 
     @Test
+    void transacao_failed_reentregue_nao_e_reaplicada() {
+        // O irmao deste teste (transacao_ja_concluida_nao_e_aplicada_de_novo)
+        // NAO isola o guarda de status: no caminho COMPLETED existem linhas em
+        // ledger_entries, e a UNIQUE(transaction_id, account_id) sozinha
+        // produziria as mesmas assercoes com o guarda deletado.
+        //
+        // No caminho FAILED nao existe essa rede. A transacao terminou sem
+        // NENHUMA linha em ledger_entries: a constraint unica nao tem em que
+        // colidir e o SAVEPOINT nao tem o que desfazer. Aqui a protecao e
+        // inteiramente o FOR UPDATE mais o guarda de status.
+        //
+        // O cenario e real, nao hipotetico: o worker grava FAILED e morre antes
+        // do DeleteMessage; enquanto a mensagem espera o visibility timeout, a
+        // conta de origem recebe um deposito; a reentrega encontra saldo que
+        // antes nao havia. Sem o guarda, ela debita de verdade e grava
+        // COMPLETED por cima de um FAILED que o cliente ja viu.
+        var origem = Fixtures.criarConta(jdbc, "0.00");
+        var destino = Fixtures.criarConta(jdbc, "0.00");
+        var tx = Fixtures.criarTransferencia(jdbc, origem, destino, "100.00");
+
+        // Estado terminal gravado direto na linha, como o worker o teria
+        // deixado antes de morrer.
+        jdbc.sql("""
+                UPDATE transactions
+                   SET status = 'FAILED', failure_reason = 'INSUFFICIENT_FUNDS'
+                 WHERE id = :id
+                """).param("id", tx).update();
+
+        // O deposito que chegou depois: agora HA saldo para o debito passar.
+        jdbc.sql("UPDATE accounts SET balance = 500.00 WHERE id = :id")
+                .param("id", origem).update();
+
+        processor.process(tx);
+
+        assertThat(status(tx))
+                .as("um FAILED nao volta a ser COMPLETED por reentrega")
+                .isEqualTo("FAILED");
+        assertThat(motivo(tx)).isEqualTo("INSUFFICIENT_FUNDS");
+        assertThat(saldo(origem))
+                .as("o deposito posterior nao pode ser debitado pela reentrega")
+                .isEqualByComparingTo(new BigDecimal("500.00"));
+        assertThat(saldo(destino)).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(lancamentos(tx)).isZero();
+    }
+
+    @Test
     void os_lancamentos_registram_o_saldo_resultante_de_cada_lado() {
         var origem = Fixtures.criarConta(jdbc, "500.00");
         var destino = Fixtures.criarConta(jdbc, "100.00");

@@ -63,12 +63,22 @@ public class TransactionRepository {
     private void atualizarStatus(UUID id, TransactionStatus status, String motivo) {
         // CAST explicito: o driver JDBC envia o parametro como varchar, e o
         // PostgreSQL nao converte varchar para enum em atribuicao.
+        //
+        // AND status = 'PENDING' e cinto e suspensorio, nao a garantia: quem
+        // impede a reaplicacao e o guarda de status em TransactionProcessor,
+        // que nem chega aqui. Esta condicao existe para que, se aquele guarda
+        // for removido um dia, o pior caso seja um movimento de saldo indevido
+        // com o status terminal PRESERVADO — e nao um COMPLETED gravado por
+        // cima de um FAILED que o cliente ja viu. Nao muda nenhum caminho vivo:
+        // os dois chamadores rodam dentro da mesma transacao que leu a linha
+        // PENDING sob FOR UPDATE.
         jdbc.sql("""
                 UPDATE transactions
                    SET status = CAST(:status AS transaction_status),
                        failure_reason = :motivo,
                        updated_at = now()
                  WHERE id = :id
+                   AND status = 'PENDING'
                 """)
                 .param("status", status.name())
                 .param("motivo", motivo)
