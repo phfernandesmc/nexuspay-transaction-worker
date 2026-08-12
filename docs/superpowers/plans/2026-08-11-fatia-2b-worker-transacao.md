@@ -2728,7 +2728,7 @@ Antes de fechar a branch, confirmar cada critério de aceitação do spec §14 c
 | 7a | Crédito adiantado desfeito (SAVEPOINT) | Task 7, `credito_aplicado_antes_do_debito_e_desfeito_quando_o_debito_falha` |
 | 8 | UUID inexistente descartado | Task 7 e Task 9 |
 | 9 | Falha de infra não deleta a mensagem | Task 9 (modo de confirmação padrão) |
-| 10 | Após N recebimentos vai para a DLQ | **lacuna conhecida** — ver abaixo |
+| 10 | Após N recebimentos vai para a DLQ e o grupo volta a fluir | Task 9, `mensagem_ilegivel_vai_para_a_dlq_e_libera_o_grupo_para_a_proxima_mensagem` |
 | 11 | `balance` nunca negativo | Task 8, `o_saldo_nunca_fica_negativo_sob_disputa` |
 
-**Lacuna declarada no critério 10.** A Task 9 configura a redrive policy no LocalStack com `maxReceiveCount = 2`, mas nenhum teste força uma exceção de infraestrutura repetida para observar a mensagem chegar na DLQ. Fechar isso exige injetar uma falha no `TransactionProcessor` (por exemplo, um bean de teste que lança nas duas primeiras chamadas) e depois consultar a DLQ. Se o tempo permitir, acrescente esse teste na Task 9; caso contrário, registre-o em `follow-ups-fatia-2b.md` como cobertura ausente — **não** o declare coberto.
+**~~Lacuna declarada no critério 10~~ — FECHADA na Task 9.** O teste publica uma mensagem com `transaction_id: "nao-e-um-uuid"` (falha na conversão do Jackson, antes do listener) e uma transferência válida no mesmo `MessageGroupId`. Prova as duas metades: a envenenada chega na DLQ (`APPROXIMATE_NUMBER_OF_MESSAGES` == 1) e a válida é processada até `COMPLETED` — o que só acontece depois que o grupo desbloqueou.
