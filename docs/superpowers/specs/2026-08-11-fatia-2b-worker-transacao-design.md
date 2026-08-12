@@ -81,7 +81,7 @@ A migration é escrita **no repositório do gateway**. O Alembic segue dono úni
 | `balance_after` | NUMERIC(15,2) | `CHECK (balance_after >= 0)` |
 | `created_at` | TIMESTAMPTZ | `NOT NULL DEFAULT now()` |
 
-- `UNIQUE (transaction_id, account_id)` — uma transação toca cada conta no máximo uma vez. É a última rede contra aplicação dupla.
+- `UNIQUE (transaction_id, account_id)` — uma transação toca cada conta no máximo uma vez. Combinada com o `ROLLBACK TO SAVEPOINT` do passo 5 (§6), é o que de fato impede a aplicação dupla — medido na Task 8, ver §6.
 - `INDEX (account_id, created_at DESC, id DESC)` — para consulta de histórico por conta.
 
 Uma transferência gera dois lançamentos; um depósito gera um. Não há partida dobrada com conta de contrapartida: o depósito traz dinheiro de fora do sistema, e inventar uma conta de clearing só para equilibrar linhas acrescentaria um conceito que ninguém consulta.
@@ -101,7 +101,9 @@ Tudo dentro de uma única transação de banco.
 6. `UPDATE transactions SET status = ..., failure_reason = ..., updated_at = now()`, fora do savepoint.
 7. Commit → confirma a mensagem.
 
-O passo 1 é o que fecha a redelivery de verdade. Dois consumidores com a mesma mensagem: o segundo **bloqueia** no `FOR UPDATE` até o primeiro commitar, então lê `COMPLETED` e desiste no passo 2. A única do ledger é a rede de baixo, não a de cima.
+**Medido, não presumido (Task 8, round de correção 1).** A afirmação original desta seção era a de que o passo 1 fecha a redelivery: o segundo consumidor bloquearia no `FOR UPDATE` até o primeiro commitar, leria `COMPLETED` e desistiria no passo 2. Isso é falso. Removendo o `FOR UPDATE` de `TransactionRepository.findForUpdate` e rodando `TransactionProcessorConcurrencyTest` 5 vezes e `TransactionProcessorTest` 2 vezes, todas as execuções passaram (5/5 e 2/2) sem nenhuma duplicação de saldo ou de lançamento. Sem a trava, os dois consumidores leem `PENDING` e os dois tentam aplicar o movimento; o segundo bate na `UNIQUE (transaction_id, account_id)` de `ledger_entries` ao inserir o lançamento duplicado, o `ROLLBACK TO SAVEPOINT` do passo 5 desfaz o movimento parcial dele, e `process()` retorna sem sobrescrever o status já gravado pelo vencedor. Quem garante a aplicação única é essa combinação — a constraint única mais o rollback do savepoint —, não o passo 1.
+
+O `FOR UPDATE` do passo 1 continua no código como defesa em profundidade e caminho rápido: ele serializa os dois consumidores **antes** de qualquer `UPDATE` em `accounts` ou `INSERT` em `ledger_entries`, então o segundo bloqueia ali, lê o status já resolvido e sai sem gastar o `UPDATE`/`INSERT`/rollback que a ausência da trava obrigaria. É uma otimização, não o mecanismo de corretude.
 
 ## 7. Movimento de saldo
 
