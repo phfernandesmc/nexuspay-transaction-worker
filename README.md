@@ -22,8 +22,16 @@ com `alembic upgrade head` aplicado.
 ./mvnw test
 ```
 
-A suíte sobe PostgreSQL 16 e LocalStack em containers descartáveis. **Nenhum
-teste automatizado fala com a fila real.**
+A suíte sobe PostgreSQL 16 e LocalStack em containers descartáveis.
+
+**Nenhum teste automatizado consegue falar com a fila real**, e o que garante
+isso é o boot, não a disciplina de quem escreve o teste: `nexuspay.sqs.queue-url`
+não tem valor padrão em `application.yml`. Um contexto Spring que suba sem
+`SQS_QUEUE_URL` no ambiente — o caso de qualquer `@SpringBootTest` — só encontra
+uma URL de fila se `application-test.yml` a fornecer, e a de lá aponta para
+LocalStack. Esquecer `@ActiveProfiles("test")` numa classe de teste nova não faz
+o consumidor subir contra produção: faz o contexto falhar com
+`Could not resolve placeholder 'SQS_QUEUE_URL'`.
 
 O teste de fumaça contra a AWS de verdade fica desligado por padrão e só lê
 atributos — não publica nem consome:

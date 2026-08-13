@@ -3,7 +3,7 @@ package com.nexuspay.worker.service;
 import com.nexuspay.worker.Fixtures;
 import com.nexuspay.worker.PostgresTestBase;
 import java.math.BigDecimal;
-import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -163,6 +163,52 @@ class TransactionProcessorTest extends PostgresTestBase {
     }
 
     @Test
+    void transacao_failed_reentregue_nao_e_reaplicada() {
+        // O irmao deste teste (transacao_ja_concluida_nao_e_aplicada_de_novo)
+        // NAO isola o guarda de status: no caminho COMPLETED existem linhas em
+        // ledger_entries, e a UNIQUE(transaction_id, account_id) sozinha
+        // produziria as mesmas assercoes com o guarda deletado.
+        //
+        // No caminho FAILED nao existe essa rede. A transacao terminou sem
+        // NENHUMA linha em ledger_entries: a constraint unica nao tem em que
+        // colidir e o SAVEPOINT nao tem o que desfazer. Aqui a protecao e
+        // inteiramente o FOR UPDATE mais o guarda de status.
+        //
+        // O cenario e real, nao hipotetico: o worker grava FAILED e morre antes
+        // do DeleteMessage; enquanto a mensagem espera o visibility timeout, a
+        // conta de origem recebe um deposito; a reentrega encontra saldo que
+        // antes nao havia. Sem o guarda, ela debita de verdade e grava
+        // COMPLETED por cima de um FAILED que o cliente ja viu.
+        var origem = Fixtures.criarConta(jdbc, "0.00");
+        var destino = Fixtures.criarConta(jdbc, "0.00");
+        var tx = Fixtures.criarTransferencia(jdbc, origem, destino, "100.00");
+
+        // Estado terminal gravado direto na linha, como o worker o teria
+        // deixado antes de morrer.
+        jdbc.sql("""
+                UPDATE transactions
+                   SET status = 'FAILED', failure_reason = 'INSUFFICIENT_FUNDS'
+                 WHERE id = :id
+                """).param("id", tx).update();
+
+        // O deposito que chegou depois: agora HA saldo para o debito passar.
+        jdbc.sql("UPDATE accounts SET balance = 500.00 WHERE id = :id")
+                .param("id", origem).update();
+
+        processor.process(tx);
+
+        assertThat(status(tx))
+                .as("um FAILED nao volta a ser COMPLETED por reentrega")
+                .isEqualTo("FAILED");
+        assertThat(motivo(tx)).isEqualTo("INSUFFICIENT_FUNDS");
+        assertThat(saldo(origem))
+                .as("o deposito posterior nao pode ser debitado pela reentrega")
+                .isEqualByComparingTo(new BigDecimal("500.00"));
+        assertThat(saldo(destino)).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(lancamentos(tx)).isZero();
+    }
+
+    @Test
     void os_lancamentos_registram_o_saldo_resultante_de_cada_lado() {
         var origem = Fixtures.criarConta(jdbc, "500.00");
         var destino = Fixtures.criarConta(jdbc, "100.00");
@@ -170,18 +216,30 @@ class TransactionProcessorTest extends PostgresTestBase {
 
         processor.process(tx);
 
-        List<BigDecimal> saldos = jdbc.sql("""
-                SELECT balance_after FROM ledger_entries
+        // A coluna direction vem no SELECT de proposito. Sem ela, o par
+        // valor/sentido era inferido pela ordem de DECLARACAO do enum
+        // ledger_direction ('DEBIT', 'CREDIT') — o Postgres ordena enum por
+        // declaracao, nao alfabeticamente. Funcionava, mas fazia o teste
+        // depender de um detalhe do schema para dizer QUAL lado e qual: uma
+        // migration que redeclarasse o enum invertido deixaria o teste verde
+        // com as asserções trocadas de lado. Agora o sentido e lido, nao
+        // deduzido; o ORDER BY so fixa o vaivem das linhas.
+        var lancamentos = jdbc.sql("""
+                SELECT direction, balance_after FROM ledger_entries
                  WHERE transaction_id = :tx ORDER BY direction
-                """).param("tx", tx).query(BigDecimal.class).list();
+                """).param("tx", tx)
+                .query((rs, linha) -> Map.entry(
+                        rs.getString("direction"), rs.getBigDecimal("balance_after")))
+                .list();
 
-        // ORDER BY direction: enum ledger_direction e declarado no schema como
-        // ('DEBIT', 'CREDIT') (schema.sql linha 44-47) — Postgres ordena enum
-        // pela ordem de DECLARACAO, nao alfabetica. DEBIT sai primeiro.
-        // Desvio do brief: o comentario original supunha ordem alfabetica
-        // (CREDIT antes de DEBIT), o que so e verdade em texto puro, nao para
-        // este tipo enumerado; os valores esperados aqui foram trocados.
-        assertThat(saldos.get(0)).isEqualByComparingTo(new BigDecimal("400.00"));
-        assertThat(saldos.get(1)).isEqualByComparingTo(new BigDecimal("200.00"));
+        assertThat(lancamentos).hasSize(2);
+        assertThat(lancamentos.get(0).getKey()).isEqualTo("DEBIT");
+        assertThat(lancamentos.get(0).getValue())
+                .as("saldo da ORIGEM depois do debito")
+                .isEqualByComparingTo(new BigDecimal("400.00"));
+        assertThat(lancamentos.get(1).getKey()).isEqualTo("CREDIT");
+        assertThat(lancamentos.get(1).getValue())
+                .as("saldo do DESTINO depois do credito")
+                .isEqualByComparingTo(new BigDecimal("200.00"));
     }
 }
