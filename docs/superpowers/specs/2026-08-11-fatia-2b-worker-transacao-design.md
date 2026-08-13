@@ -65,7 +65,7 @@ Três consequências dessa configuração, todas verificadas empiricamente:
 
 A separação de privilégio foi confirmada nos dois sentidos: `backend-fastapi-producer` não consegue ler a fila, `backend-java-worker` não consegue escrever nela.
 
-**Dívida conhecida, fora do escopo desta fatia:** `sqs:CreateQueue` está permitido nos dois usuários, o que contraria a separação pretendida.
+**Sobre gerenciamento de fila:** nenhum dos dois usuários pode criar, apagar ou esvaziar fila. O IAM nega por padrão, e as policies concedem apenas as ações listadas. Uma sondagem anterior sugeriu o contrário, mas media validação de parâmetro e não autorização — a SQS valida o nome da fila **antes** de checar permissão, então um nome inválido devolve `InvalidParameterValue` mesmo sem acesso. Refeita com nome válido, a chamada volta `AccessDenied` nos dois perfis.
 
 ## 5. Schema — `ledger_entries`
 
@@ -215,7 +215,6 @@ O que precisa de cobertura, e que só existe com SQS de verdade (ainda que emula
 1. **Ciclo DLQ ↔ varredura** para bug genuíno (§9). Mitigação: profundidade da DLQ como alarme.
 2. **Divergência de schema entre repositórios** (§12). Mitigação: teste de colunas.
 3. **Fila compartilhada entre desenvolvimento e produção.** Decisão do dono do projeto, mantida. Mitigação: a mensagem carrega só o UUID, e cada ambiente tem seu banco — um worker que não acha o UUID não move saldo nenhum (2a §10.2).
-4. **`sqs:CreateQueue` concedido a mais** nos dois usuários. Fora do escopo desta fatia.
 
 ## 14. Critérios de aceitação
 

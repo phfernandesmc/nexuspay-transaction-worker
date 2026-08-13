@@ -18,11 +18,6 @@ um worker publicado.
 
 ## Dívida de infraestrutura
 
-### `sqs:CreateQueue` está concedido nos dois usuários IAM
-
-Contraria a separação de privilégio pretendida — `backend-fastapi-producer`
-deveria apenas enviar mensagem. Verificado por sondagem durante o desenho da 2b.
-
 ## Fora de escopo, mas alguém vai perguntar
 
 - **Estorno de transação já concluída.** Não existe caminho. Provavelmente é uma
