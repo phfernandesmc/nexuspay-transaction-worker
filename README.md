@@ -9,6 +9,11 @@ Java 25, Spring Boot 4.0.7, Spring Cloud AWS 4.1.0, acesso a dados por
 
 ## Rodar
 
+> Este repositório é uma das três partes do NexusPay. Para subir o sistema
+> inteiro na ordem certa, veja
+> [RODANDO-LOCALMENTE.md](https://github.com/phfernandesmc/nexuspay-api-gateway/blob/main/RODANDO-LOCALMENTE.md) no repositório do gateway.
+
+
 Pré-requisitos: Docker ligado, e o Postgres do gateway no ar em `localhost:5433`
 com `alembic upgrade head` aplicado.
 
